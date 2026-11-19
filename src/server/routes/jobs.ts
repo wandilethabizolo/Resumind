@@ -1,8 +1,9 @@
 import { Router } from 'express';
-import { and, desc, eq, ilike, or } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, inArray, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, runQuery } from '../../db/index.ts';
 import {
+  applicationHistory,
   cvDocuments,
   jobApplications,
   jobs,
@@ -10,12 +11,12 @@ import {
   organizations,
   savedJobs,
 } from '../../db/schema.ts';
-import { AuthRequest, optionalAuth, requireAuth } from '../middleware/auth.ts';
+import { AuthRequest, requireAuth } from '../middleware/auth.ts';
 import { createNotification } from '../services/notifications.ts';
 
 const router = Router();
 
-router.get('/', optionalAuth, async (req: AuthRequest, res) => {
+router.get('/', requireAuth, async (req: AuthRequest, res) => {
   try {
     const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
     const country = typeof req.query.country === 'string' ? req.query.country.trim() : '';
@@ -26,6 +27,15 @@ router.get('/', optionalAuth, async (req: AuthRequest, res) => {
       typeof req.query.employmentType === 'string' ? req.query.employmentType.trim() : '';
     const experienceLevel =
       typeof req.query.experienceLevel === 'string' ? req.query.experienceLevel.trim() : '';
+    const verifiedOnly = req.query.verifiedOnly === 'true';
+    const postedWithin =
+      typeof req.query.postedWithin === 'string' ? req.query.postedWithin.trim() : '';
+    let postedAfter: Date | undefined;
+    if (postedWithin === '7d') {
+      postedAfter = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    } else if (postedWithin === '30d') {
+      postedAfter = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    }
 
     const rows = await runQuery('jobs.list', () =>
       db
@@ -52,6 +62,8 @@ router.get('/', optionalAuth, async (req: AuthRequest, res) => {
             workArrangement ? eq(jobs.workArrangement, workArrangement) : undefined,
             employmentType ? eq(jobs.employmentType, employmentType) : undefined,
             experienceLevel ? eq(jobs.experienceLevel, experienceLevel) : undefined,
+            verifiedOnly ? eq(organizations.verified, true) : undefined,
+            postedAfter ? gte(jobs.createdAt, postedAfter) : undefined,
             q
               ? or(
                   ilike(jobs.title, `%${q}%`),
@@ -116,12 +128,43 @@ router.get('/applications/me', requireAuth, async (req: AuthRequest, res) => {
         .orderBy(desc(jobApplications.updatedAt))
     );
 
+    const appIds = rows.map((r) => r.application.id);
+    const historyRows = appIds.length
+      ? await runQuery('jobs.myApplicationHistory', () =>
+          db
+            .select({
+              id: applicationHistory.id,
+              applicationId: applicationHistory.applicationId,
+              fromStage: applicationHistory.fromStage,
+              toStage: applicationHistory.toStage,
+              createdAt: applicationHistory.createdAt,
+            })
+            .from(applicationHistory)
+            .where(inArray(applicationHistory.applicationId, appIds))
+            .orderBy(applicationHistory.createdAt)
+        )
+      : [];
+
+    const historyByApp = new Map<
+      number,
+      Array<{ id: number; fromStage: string; toStage: string; createdAt: Date }>
+    >();
+    for (const h of historyRows) {
+      const list = historyByApp.get(h.applicationId) ?? [];
+      list.push({ id: h.id, fromStage: h.fromStage, toStage: h.toStage, createdAt: h.createdAt });
+      historyByApp.set(h.applicationId, list);
+    }
+
     res.json({
-      applications: rows.map((r) => ({
-        ...r.application,
-        job: r.job,
-        organization: r.organization,
-      })),
+      applications: rows.map((r) => {
+        const { employerNotes: _hiddenNotes, ...safeApp } = r.application;
+        return {
+          ...safeApp,
+          job: r.job,
+          organization: r.organization,
+          history: historyByApp.get(r.application.id) ?? [],
+        };
+      }),
     });
   } catch {
     res.status(500).json({ error: 'Failed to load your job applications' });
@@ -205,6 +248,15 @@ router.post('/:id/apply', requireAuth, async (req: AuthRequest, res) => {
           .where(eq(jobApplications.id, existingApp[0].id))
           .returning()
       );
+      await runQuery('jobs.reapplyHistory', () =>
+        db.insert(applicationHistory).values({
+          applicationId: reopened[0].id,
+          fromStage: 'withdrawn',
+          toStage: 'submitted',
+          changedById: userId,
+          note: 'Candidate re-submitted application',
+        })
+      );
       return res.status(201).json({ application: reopened[0] });
     }
     return res.status(409).json({ error: 'You have already applied for this vacancy' });
@@ -221,6 +273,16 @@ router.post('/:id/apply', requireAuth, async (req: AuthRequest, res) => {
         stage: 'submitted',
       })
       .returning()
+  );
+
+  await runQuery('jobs.createHistory', () =>
+    db.insert(applicationHistory).values({
+      applicationId: inserted[0].id,
+      fromStage: '',
+      toStage: 'submitted',
+      changedById: userId,
+      note: 'Application submitted',
+    })
   );
 
   // Notify organization recruiters/owners
@@ -264,7 +326,7 @@ router.post('/applications/:appId/withdraw', requireAuth, async (req: AuthReques
   if (!rows[0] || rows[0].applicantId !== req.dbUser!.id) {
     return res.status(404).json({ error: 'Application not found' });
   }
-  if (['offer', 'rejected', 'withdrawn'].includes(rows[0].stage)) {
+  if (['offer', 'hired', 'rejected', 'withdrawn'].includes(rows[0].stage)) {
     return res.status(400).json({ error: `Cannot withdraw application in '${rows[0].stage}' stage` });
   }
 
@@ -274,6 +336,15 @@ router.post('/applications/:appId/withdraw', requireAuth, async (req: AuthReques
       .set({ stage: 'withdrawn', updatedAt: new Date() })
       .where(eq(jobApplications.id, appId))
       .returning()
+  );
+  await runQuery('jobs.withdrawHistory', () =>
+    db.insert(applicationHistory).values({
+      applicationId: appId,
+      fromStage: rows[0].stage,
+      toStage: 'withdrawn',
+      changedById: req.dbUser!.id,
+      note: 'Withdrawn by candidate',
+    })
   );
   res.json({ application: updated[0] });
 });

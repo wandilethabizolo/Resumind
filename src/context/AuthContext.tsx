@@ -18,6 +18,7 @@ interface AuthContextValue {
   profile: UserProfile | null;
   organizations: OrganizationSummary[];
   unreadNotifications: number;
+  unreadMessages: number;
   mfaVerified: boolean;
   loading: boolean;
   authError: string | null;
@@ -29,7 +30,9 @@ interface AuthContextValue {
   logout: () => Promise<void>;
   refreshSession: () => Promise<void>;
   apiFetch: <T = unknown>(path: string, options?: RequestInit) => Promise<T>;
+  getAuthHeaders: (forceRefresh?: boolean) => Promise<Record<string, string>>;
   setUnreadNotifications: React.Dispatch<React.SetStateAction<number>>;
+  setUnreadMessages: React.Dispatch<React.SetStateAction<number>>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -69,6 +72,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [organizations, setOrganizations] = useState<OrganizationSummary[]>([]);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [unreadMessages, setUnreadMessages] = useState(0);
   const [mfaVerified, setMfaVerified] = useState(false);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -79,6 +83,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const sessionKeyRef = useRef<string | null>(null);
   const socketRef = useRef<Socket | null>(null);
   const syncInFlightRef = useRef<{ uid: string; promise: Promise<void> } | null>(null);
+  const currentUserIdRef = useRef<number | null>(null);
+  const seenMsgIdsRef = useRef<Set<number>>(new Set());
 
   const getFreshToken = useCallback(
     async (fbUser: FirebaseUser | null, forceRefresh = false): Promise<string | null> => {
@@ -122,6 +128,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     activeSocket.on('notification:new', () => {
       setUnreadNotifications((c) => c + 1);
+    });
+
+    activeSocket.on('message:new', (msg: { id?: number; senderId?: number }) => {
+      if (!msg?.id || seenMsgIdsRef.current.has(msg.id)) return;
+      seenMsgIdsRef.current.add(msg.id);
+      if (msg.senderId && msg.senderId !== currentUserIdRef.current) {
+        setUnreadMessages((c) => c + 1);
+      }
     });
 
     socketRef.current = activeSocket;
@@ -180,6 +194,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [disconnectSocket, getFreshToken]
   );
 
+  const getAuthHeaders = useCallback(
+    async (forceRefresh = false): Promise<Record<string, string>> => {
+      const fbUser = auth.currentUser;
+      const token = fbUser ? await getFreshToken(fbUser, forceRefresh) : tokenRef.current;
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      if (sessionKeyRef.current) headers['x-session-key'] = sessionKeyRef.current;
+      return headers;
+    },
+    [getFreshToken]
+  );
+
   const syncBackendSession = useCallback(
     async (fbUser: FirebaseUser, forceTokenRefresh = false) => {
       if (syncInFlightRef.current && syncInFlightRef.current.uid === fbUser.uid) {
@@ -215,10 +241,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               lastError = err;
             } else {
               sessionKeyRef.current = data.sessionKey;
+              currentUserIdRef.current = data.user?.id ?? null;
               setUser(data.user);
               setProfile(data.profile);
               setOrganizations(data.organizations || []);
               setUnreadNotifications(data.unreadNotifications || 0);
+              setUnreadMessages(data.unreadMessages || 0);
               setMfaVerified(Boolean(data.mfaVerified));
               setAuthError(null);
               connectSocket();
@@ -277,10 +305,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!fbUser) {
         tokenRef.current = null;
         sessionKeyRef.current = null;
+        currentUserIdRef.current = null;
         setUser(null);
         setProfile(null);
         setOrganizations([]);
         setUnreadNotifications(0);
+        setUnreadMessages(0);
         setMfaVerified(false);
         disconnectSocket();
         setLoading(false);
@@ -381,6 +411,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         profile,
         organizations,
         unreadNotifications,
+        unreadMessages,
         mfaVerified,
         loading,
         authError,
@@ -392,7 +423,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         logout,
         refreshSession,
         apiFetch,
+        getAuthHeaders,
         setUnreadNotifications,
+        setUnreadMessages,
       }}
     >
       {children}

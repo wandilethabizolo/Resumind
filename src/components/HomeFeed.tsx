@@ -4,16 +4,23 @@ import {
   Bookmark,
   CheckCircle2,
   Edit3,
+  Film,
   Flag,
   Heart,
   ImagePlus,
   MessageSquare,
-  Repeat2,
+  RefreshCw,
   Trash2,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { AppTab, FeedPost } from '../types';
+import {
+  AuthenticatedPostVideo,
+  PostDownloadMenu,
+  PostShareMenu,
+} from '../lib/postMedia';
+import { AppTab, FeedPost, ReactionType } from '../types';
 import { PostModal } from './PostModal';
+import { PostReactionButton, ReactionSummary } from './ReactionPicker';
 import { ReportModal } from './ReportModal';
 
 interface CommentRow {
@@ -25,17 +32,28 @@ interface CommentRow {
   authorName: string;
   authorHeadline: string;
   authorAvatar: string;
+  likesCount: number;
+  likedByMe: boolean;
   createdAt: string;
 }
 
 interface HomeFeedProps {
   onNavigate: (tab: AppTab) => void;
   onViewProfile: (userId: number) => void;
+  focusedPostId?: number | null;
+  onClearFocusedPost?: () => void;
 }
 
-export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile }) => {
-  const { user, profile, apiFetch } = useAuth();
+export const HomeFeed: React.FC<HomeFeedProps> = ({
+  onNavigate,
+  onViewProfile,
+  focusedPostId,
+  onClearFocusedPost,
+}) => {
+  const { user, profile, apiFetch, socket } = useAuth();
   const [posts, setPosts] = useState<FeedPost[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [trendingTopics, setTrendingTopics] = useState<Array<{ topic: string; count: number }>>([]);
   const [suggestedOrgs, setSuggestedOrgs] = useState<
     Array<{ id: number; name: string; industry: string; location: string; country: string; verified: boolean }>
@@ -43,10 +61,13 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
   const [loading, setLoading] = useState(true);
   const [activeTopic, setActiveTopic] = useState('');
   const [savedOnly, setSavedOnly] = useState(false);
+  const [scope, setScope] = useState<'all' | 'connections'>('all');
+  const [pendingNewPostsCount, setPendingNewPostsCount] = useState(0);
 
   // Modal composer state
   const [modalOpen, setModalOpen] = useState(false);
   const [modalFocusMedia, setModalFocusMedia] = useState(false);
+  const [modalFocusVideo, setModalFocusVideo] = useState(false);
   const [modalPostType, setModalPostType] = useState<'update' | 'achievement' | 'article'>('update');
   const [editingPost, setEditingPost] = useState<FeedPost | null>(null);
 
@@ -58,44 +79,78 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
   const [reportTarget, setReportTarget] = useState<{ id: number; label: string } | null>(null);
   const [error, setError] = useState('');
 
-  const loadFeed = useCallback(async () => {
-    setLoading(true);
-    try {
-      const qs = new URLSearchParams();
-      if (activeTopic) qs.set('topic', activeTopic);
-      if (savedOnly) qs.set('saved', 'true');
-      const data = await apiFetch<{
-        posts: FeedPost[];
-        trendingTopics: Array<{ topic: string; count: number }>;
-        suggestedOrganizations: Array<{
-          id: number;
-          name: string;
-          industry: string;
-          location: string;
-          country: string;
-          verified: boolean;
-        }>;
-      }>(`/api/feed?${qs.toString()}`);
-      setPosts(data.posts || []);
-      setTrendingTopics(data.trendingTopics || []);
-      setSuggestedOrgs(data.suggestedOrganizations || []);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Unable to load feed');
-    } finally {
-      setLoading(false);
-    }
-  }, [activeTopic, apiFetch, savedOnly]);
+  const loadFeed = useCallback(
+    async (offset = 0, append = false) => {
+      if (append) {
+        setLoadingMore(true);
+      } else {
+        setLoading(true);
+      }
+      try {
+        const qs = new URLSearchParams();
+        if (focusedPostId) qs.set('postId', String(focusedPostId));
+        if (activeTopic) qs.set('topic', activeTopic);
+        if (savedOnly) qs.set('saved', 'true');
+        if (scope === 'connections') qs.set('scope', 'connections');
+        qs.set('limit', '20');
+        qs.set('offset', String(offset));
+
+        const data = await apiFetch<{
+          posts: FeedPost[];
+          hasMore?: boolean;
+          trendingTopics: Array<{ topic: string; count: number }>;
+          suggestedOrganizations: Array<{
+            id: number;
+            name: string;
+            industry: string;
+            location: string;
+            country: string;
+            verified: boolean;
+          }>;
+        }>(`/api/feed?${qs.toString()}`);
+
+        const nextPosts = data.posts || [];
+        setPosts((prev) => (append ? [...prev, ...nextPosts] : nextPosts));
+        setHasMore(Boolean(data.hasMore));
+        if (!append) {
+          setTrendingTopics(data.trendingTopics || []);
+          setSuggestedOrgs(data.suggestedOrganizations || []);
+          setPendingNewPostsCount(0);
+        }
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : 'Unable to load feed');
+      } finally {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    },
+    [activeTopic, apiFetch, focusedPostId, savedOnly, scope]
+  );
 
   useEffect(() => {
-    loadFeed();
+    loadFeed(0, false);
   }, [loadFeed]);
+
+  useEffect(() => {
+    if (!socket) return;
+    const onNewPost = (payload: { postId?: number; authorId?: number }) => {
+      if (!payload?.postId || payload.authorId === user?.id) return;
+      setPendingNewPostsCount((c) => c + 1);
+    };
+    socket.on('post:new', onNewPost);
+    return () => {
+      socket.off('post:new', onNewPost);
+    };
+  }, [socket, user?.id]);
 
   const openCreateModal = (opts?: {
     focusMedia?: boolean;
+    focusVideo?: boolean;
     postType?: 'update' | 'achievement' | 'article';
   }) => {
     setEditingPost(null);
     setModalFocusMedia(Boolean(opts?.focusMedia));
+    setModalFocusVideo(Boolean(opts?.focusVideo));
     setModalPostType(opts?.postType || 'update');
     setModalOpen(true);
   };
@@ -103,6 +158,7 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
   const openEditModal = (post: FeedPost) => {
     setEditingPost(post);
     setModalFocusMedia(false);
+    setModalFocusVideo(false);
     setModalOpen(true);
   };
 
@@ -112,6 +168,8 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
     postType: 'update' | 'achievement' | 'article';
     visibility: 'public' | 'connections';
     imageUrl: string | null;
+    videoUrl: string | null;
+    videoDurationSeconds: number | null;
   }) => {
     if (editingPost) {
       await apiFetch(`/api/feed/${editingPost.id}`, {
@@ -124,16 +182,32 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
         body: JSON.stringify(payload),
       });
     }
-    await loadFeed();
+    await loadFeed(0, false);
   };
 
-  const handleReaction = async (postId: number) => {
+  const handleReaction = async (postId: number, type: ReactionType = 'like') => {
     try {
-      await apiFetch(`/api/feed/${postId}/react`, {
+      const res = await apiFetch<{
+        reacted: boolean;
+        type: string | null;
+        reactionCount: number;
+        reactionBreakdown: Partial<Record<ReactionType, number>>;
+      }>(`/api/feed/${postId}/react`, {
         method: 'POST',
-        body: JSON.stringify({ type: 'like' }),
+        body: JSON.stringify({ type }),
       });
-      await loadFeed();
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === postId
+            ? {
+                ...p,
+                userReaction: res.type,
+                reactionCount: res.reactionCount,
+                reactionBreakdown: res.reactionBreakdown,
+              }
+            : p
+        )
+      );
     } catch {
       // ignore
     }
@@ -142,7 +216,7 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
   const handleSave = async (postId: number) => {
     try {
       await apiFetch(`/api/feed/${postId}/save`, { method: 'POST' });
-      await loadFeed();
+      await loadFeed(0, false);
     } catch {
       // ignore
     }
@@ -157,10 +231,13 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
           topic: post.topic,
           postType: 'repost',
           repostOfId: post.id,
+          imageUrl: post.imageUrl,
+          videoUrl: post.videoUrl,
+          videoDurationSeconds: post.videoDurationSeconds ?? null,
           visibility: 'public',
         }),
       });
-      await loadFeed();
+      await loadFeed(0, false);
     } catch {
       // ignore
     }
@@ -168,7 +245,7 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
 
   const handleDeletePost = async (postId: number) => {
     await apiFetch(`/api/feed/${postId}`, { method: 'DELETE' });
-    await loadFeed();
+    await loadFeed(0, false);
   };
 
   const toggleComments = async (postId: number) => {
@@ -192,7 +269,41 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
     setReplyParentId(null);
     const data = await apiFetch<{ comments: CommentRow[] }>(`/api/feed/${postId}/comments`);
     setCommentsByPost((prev) => ({ ...prev, [postId]: data.comments || [] }));
-    await loadFeed();
+    setPosts((prev) =>
+      prev.map((p) => (p.id === postId ? { ...p, commentCount: p.commentCount + 1 } : p))
+    );
+  };
+
+  const handleLikeComment = async (postId: number, commentId: number) => {
+    try {
+      const res = await apiFetch<{ liked: boolean; likesCount: number }>(
+        `/api/feed/comments/${commentId}/like`,
+        { method: 'POST' }
+      );
+      setCommentsByPost((prev) => ({
+        ...prev,
+        [postId]: (prev[postId] || []).map((c) =>
+          c.id === commentId ? { ...c, likedByMe: res.liked, likesCount: res.likesCount } : c
+        ),
+      }));
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleDeleteComment = async (postId: number, commentId: number) => {
+    try {
+      await apiFetch(`/api/feed/comments/${commentId}`, { method: 'DELETE' });
+      const data = await apiFetch<{ comments: CommentRow[] }>(`/api/feed/${postId}/comments`);
+      setCommentsByPost((prev) => ({ ...prev, [postId]: data.comments || [] }));
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === postId ? { ...p, commentCount: Math.max(0, p.commentCount - 1) } : p
+        )
+      );
+    } catch {
+      // ignore
+    }
   };
 
   return (
@@ -356,40 +467,94 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
             </button>
           </div>
 
-          <div className="mt-3 flex items-center gap-2 border-t border-slate-100 pt-2.5 dark:border-slate-800">
-            <button
-              type="button"
-              onClick={() => openCreateModal({ focusMedia: true })}
-              className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-            >
-              <ImagePlus className="h-4 w-4 text-[#0F5C4D] dark:text-emerald-400" />
-              Photo
-            </button>
-            <button
-              type="button"
-              onClick={() => openCreateModal({ postType: 'achievement' })}
-              className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-            >
-              <Award className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-              Milestone
-            </button>
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5 dark:border-slate-800">
+            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+              <button
+                type="button"
+                onClick={() => openCreateModal({ focusMedia: true })}
+                className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                <ImagePlus className="h-4 w-4 text-[#0F5C4D] dark:text-emerald-400" />
+                Photo
+              </button>
+              <button
+                type="button"
+                onClick={() => openCreateModal({ focusVideo: true })}
+                className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                <Film className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+                Video (≤ 3m)
+              </button>
+              <button
+                type="button"
+                onClick={() => openCreateModal({ postType: 'achievement' })}
+                className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                <Award className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                Milestone
+              </button>
+            </div>
+
+            <div className="flex items-center rounded-lg bg-slate-100 p-0.5 dark:bg-slate-800">
+              <button
+                type="button"
+                onClick={() => setScope('all')}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap ${
+                  scope === 'all'
+                    ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-900 dark:text-white'
+                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-300'
+                }`}
+              >
+                All Updates
+              </button>
+              <button
+                type="button"
+                onClick={() => setScope('connections')}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap ${
+                  scope === 'connections'
+                    ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-900 dark:text-white'
+                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-300'
+                }`}
+              >
+                Connections
+              </button>
+            </div>
           </div>
 
           {error && <p className="mt-2 text-xs text-red-600 dark:text-red-400">{error}</p>}
         </div>
 
-        {(activeTopic || savedOnly) && (
+        {pendingNewPostsCount > 0 && (
+          <button
+            type="button"
+            onClick={() => loadFeed(0, false)}
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-2 text-xs font-medium text-[#0F5C4D] hover:bg-emerald-100 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300 dark:hover:bg-emerald-950"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            <span>
+              <span className="font-mono tabular-nums">{pendingNewPostsCount}</span> new{' '}
+              {pendingNewPostsCount === 1 ? 'update' : 'updates'} available — Refresh feed
+            </span>
+          </button>
+        )}
+
+        {(focusedPostId || activeTopic || savedOnly) && (
           <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
-            <span>Filtering by: {savedOnly ? 'Saved Posts' : activeTopic}</span>
+            <span>
+              {focusedPostId
+                ? `Viewing shared post #${focusedPostId}`
+                : `Filtering by: ${savedOnly ? 'Saved Posts' : activeTopic}`}
+            </span>
             <button
               type="button"
               onClick={() => {
                 setActiveTopic('');
                 setSavedOnly(false);
+                onClearFocusedPost?.();
               }}
               className="font-medium text-[#0F5C4D] hover:underline dark:text-emerald-400"
             >
-              Clear filter
+              {focusedPostId ? 'Show all feed' : 'Clear filter'}
             </button>
           </div>
         )}
@@ -406,7 +571,11 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
         ) : posts.length === 0 ? (
           <div className="rounded-xl border border-slate-200 bg-white p-8 text-center dark:border-slate-800 dark:bg-slate-900">
             <p className="text-sm font-medium text-slate-800 dark:text-slate-200">
-              {savedOnly ? 'No saved posts yet.' : 'Your feed is quiet.'}
+              {savedOnly
+                ? 'No saved posts yet.'
+                : scope === 'connections'
+                ? 'No updates from your connections yet.'
+                : 'Your feed is quiet.'}
             </p>
             <p className="mt-1 text-xs text-slate-500">
               {savedOnly
@@ -521,21 +690,25 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
                     </div>
                   )}
 
-                  <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-2.5 text-xs dark:border-slate-800">
-                    <div className="flex items-center gap-4">
-                      <button
-                        type="button"
-                        onClick={() => handleReaction(post.id)}
-                        className={`inline-flex items-center gap-1.5 font-medium transition-colors ${
-                          post.userReaction
-                            ? 'text-[#0F5C4D] dark:text-emerald-400'
-                            : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
-                        }`}
-                      >
-                        <Heart className="h-3.5 w-3.5" />
-                        <span className="font-mono tabular-nums">{post.reactionCount}</span>
-                        <span>Like</span>
-                      </button>
+                  {post.videoUrl && (
+                    <AuthenticatedPostVideo
+                      videoUrl={post.videoUrl}
+                      durationSeconds={post.videoDurationSeconds}
+                    />
+                  )}
+
+                  <ReactionSummary
+                    reactionCount={post.reactionCount}
+                    reactionBreakdown={post.reactionBreakdown}
+                  />
+
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-2.5 text-xs dark:border-slate-800">
+                    <div className="flex flex-wrap items-center gap-3 sm:gap-4">
+                      <PostReactionButton
+                        userReaction={post.userReaction}
+                        reactionCount={post.reactionCount}
+                        onReact={(type) => handleReaction(post.id, type)}
+                      />
                       <button
                         type="button"
                         onClick={() => toggleComments(post.id)}
@@ -545,27 +718,23 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
                         <span className="font-mono tabular-nums">{post.commentCount}</span>
                         <span>Comments</span>
                       </button>
+                      <PostShareMenu post={post} onRepost={handleRepost} />
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <PostDownloadMenu post={post} />
                       <button
                         type="button"
-                        onClick={() => handleRepost(post)}
-                        className="inline-flex items-center gap-1.5 font-medium text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                        onClick={() => handleSave(post.id)}
+                        className={`inline-flex items-center gap-1 font-medium ${
+                          post.isSaved
+                            ? 'text-[#0F5C4D] dark:text-emerald-400'
+                            : 'text-slate-500 hover:text-slate-900 dark:text-slate-400'
+                        }`}
                       >
-                        <Repeat2 className="h-3.5 w-3.5" />
-                        <span>Repost</span>
+                        <Bookmark className={`h-3.5 w-3.5 ${post.isSaved ? 'fill-current' : ''}`} />
+                        <span>{post.isSaved ? 'Saved' : 'Save'}</span>
                       </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleSave(post.id)}
-                      className={`inline-flex items-center gap-1 font-medium ${
-                        post.isSaved
-                          ? 'text-[#0F5C4D] dark:text-emerald-400'
-                          : 'text-slate-500 hover:text-slate-900 dark:text-slate-400'
-                      }`}
-                    >
-                      <Bookmark className="h-3.5 w-3.5" />
-                      <span>{post.isSaved ? 'Saved' : 'Save'}</span>
-                    </button>
                   </div>
 
                   {openCommentsPostId === post.id && (
@@ -575,7 +744,7 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
                           key={c.id}
                           className={`text-xs ${c.parentId ? 'ml-6 border-l border-slate-200 pl-3 dark:border-slate-700' : ''}`}
                         >
-                          <div className="flex items-center justify-between">
+                          <div className="flex items-center justify-between gap-2">
                             <button
                               type="button"
                               onClick={() => onViewProfile(c.authorId)}
@@ -583,17 +752,57 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
                             >
                               {c.authorName}
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => setReplyParentId(c.id)}
-                              className="text-slate-500 hover:text-[#0F5C4D]"
-                            >
-                              Reply
-                            </button>
+                            <div className="flex items-center gap-3">
+                              <button
+                                type="button"
+                                onClick={() => handleLikeComment(post.id, c.id)}
+                                className={`inline-flex items-center gap-1 transition-colors ${
+                                  c.likedByMe
+                                    ? 'font-medium text-[#0F5C4D] dark:text-emerald-400'
+                                    : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+                                }`}
+                              >
+                                <Heart
+                                  className={`h-3 w-3 ${c.likedByMe ? 'fill-current' : ''}`}
+                                />
+                                <span className="font-mono tabular-nums">{c.likesCount}</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setReplyParentId(c.id)}
+                                className="text-slate-500 hover:text-[#0F5C4D] dark:text-slate-400"
+                              >
+                                Reply
+                              </button>
+                              {c.authorId === user?.id && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteComment(post.id, c.id)}
+                                  className="text-slate-400 hover:text-red-600"
+                                  aria-label="Delete comment"
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                </button>
+                              )}
+                            </div>
                           </div>
                           <p className="mt-0.5 text-slate-700 dark:text-slate-300">{c.content}</p>
                         </div>
                       ))}
+
+                      {replyParentId && (
+                        <div className="flex items-center justify-between text-[11px] text-slate-500">
+                          <span>Replying to comment</span>
+                          <button
+                            type="button"
+                            onClick={() => setReplyParentId(null)}
+                            className="font-medium text-[#0F5C4D] hover:underline dark:text-emerald-400"
+                          >
+                            Cancel reply
+                          </button>
+                        </div>
+                      )}
+
                       <div className="flex gap-2">
                         <input
                           type="text"
@@ -601,13 +810,19 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
                           onChange={(e) =>
                             setCommentInput((prev) => ({ ...prev, [post.id]: e.target.value }))
                           }
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddComment(post.id);
+                            }
+                          }}
                           placeholder={replyParentId ? 'Write a reply...' : 'Add a comment...'}
                           className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-950"
                         />
                         <button
                           type="button"
                           onClick={() => handleAddComment(post.id)}
-                          className="rounded-lg bg-[#0F5C4D] px-3 py-1.5 text-xs font-medium text-white"
+                          className="rounded-lg bg-[#0F5C4D] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#0c4a3e]"
                         >
                           Send
                         </button>
@@ -617,6 +832,19 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
                 </article>
               );
             })}
+
+            {hasMore && (
+              <div className="flex justify-center pt-1">
+                <button
+                  type="button"
+                  disabled={loadingMore}
+                  onClick={() => loadFeed(posts.length, true)}
+                  className="rounded-lg border border-slate-300 bg-white px-5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  {loadingMore ? 'Loading...' : 'Load older posts'}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </main>
@@ -631,6 +859,7 @@ export const HomeFeed: React.FC<HomeFeedProps> = ({ onNavigate, onViewProfile })
         authorAvatar={profile?.avatarUrl}
         initialPost={editingPost}
         initialFocusMedia={modalFocusMedia}
+        initialFocusVideo={modalFocusVideo}
         initialPostType={modalPostType}
         onSubmit={handleModalSubmit}
       />

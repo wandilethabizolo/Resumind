@@ -5,8 +5,17 @@ export type AppTab =
   | 'messages'
   | 'notifications'
   | 'profile'
-  | 'career'
   | 'employers';
+
+export type ReactionType =
+  | 'like'
+  | 'love'
+  | 'celebrate'
+  | 'support'
+  | 'insightful'
+  | 'funny'
+  | 'dislike'
+  | 'hate';
 
 export interface ExperienceItem {
   id: string;
@@ -96,7 +105,7 @@ export interface OrganizationSummary {
   verified: boolean;
   verificationStatus: 'pending' | 'verified' | 'rejected';
   status: 'active' | 'suspended';
-  memberRole?: 'owner' | 'admin' | 'recruiter' | 'viewer' | null;
+  memberRole?: 'owner' | 'admin' | 'recruiter' | 'hiring_manager' | 'interviewer' | 'viewer' | null;
 }
 
 export interface FeedPost {
@@ -110,12 +119,15 @@ export interface FeedPost {
   organization: { id: number; name: string; verified: boolean } | null;
   content: string;
   imageUrl: string | null;
+  videoUrl: string | null;
+  videoDurationSeconds?: number | null;
   topic: string;
   postType: 'update' | 'achievement' | 'article' | 'repost';
   visibility: 'public' | 'connections';
   reactionCount: number;
+  reactionBreakdown?: Partial<Record<ReactionType, number>>;
   commentCount: number;
-  userReaction: string | null;
+  userReaction: ReactionType | string | null;
   isSaved: boolean;
   createdAt: string;
 }
@@ -124,6 +136,7 @@ export interface JobListing {
   id: number;
   organizationId: number;
   title: string;
+  department?: string;
   description: string;
   requirements: string;
   location: string;
@@ -132,7 +145,8 @@ export interface JobListing {
   employmentType: 'full-time' | 'part-time' | 'contract' | 'internship';
   experienceLevel: 'entry' | 'mid' | 'senior' | 'executive';
   salaryRange: string;
-  status: 'draft' | 'published' | 'closed' | 'moderated';
+  status: 'draft' | 'published' | 'paused' | 'closed' | 'archived' | 'moderated';
+  expiresAt?: string | null;
   createdAt: string;
   organization: {
     id: number;

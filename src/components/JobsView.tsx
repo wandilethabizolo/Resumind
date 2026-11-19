@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Bookmark, CheckCircle2, Flag, Search } from 'lucide-react';
+import { Bookmark, CheckCircle2, Flag, Search, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { JobListing } from '../types';
 import { ReportModal } from './ReportModal';
 
-interface CvDoc {
+interface ApplicationHistoryItem {
   id: number;
-  title: string;
-  fileName: string;
+  fromStage: string;
+  toStage: string;
+  createdAt: string;
 }
 
 interface MyApplication {
@@ -17,6 +18,7 @@ interface MyApplication {
   coverLetter: string;
   createdAt: string;
   updatedAt: string;
+  history?: ApplicationHistoryItem[];
   job: {
     id: number;
     title: string;
@@ -37,12 +39,11 @@ interface JobsViewProps {
 }
 
 export const JobsView: React.FC<JobsViewProps> = ({ initialQuery, onClearInitialQuery }) => {
-  const { apiFetch } = useAuth();
+  const { apiFetch, user, profile } = useAuth();
   const [subTab, setSubTab] = useState<'discover' | 'saved' | 'applications'>('discover');
   const [jobs, setJobs] = useState<JobListing[]>([]);
   const [selectedJob, setSelectedJob] = useState<JobListing | null>(null);
   const [myApps, setMyApps] = useState<MyApplication[]>([]);
-  const [cvDocs, setCvDocs] = useState<CvDoc[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Filters
@@ -54,14 +55,16 @@ export const JobsView: React.FC<JobsViewProps> = ({ initialQuery, onClearInitial
       onClearInitialQuery?.();
     }
   }, [initialQuery, onClearInitialQuery]);
+
   const [country, setCountry] = useState('');
   const [workArrangement, setWorkArrangement] = useState('');
   const [employmentType, setEmploymentType] = useState('');
   const [experienceLevel, setExperienceLevel] = useState('');
+  const [postedWithin, setPostedWithin] = useState('');
+  const [verifiedOnly, setVerifiedOnly] = useState(false);
 
   // Apply Modal
   const [applyJob, setApplyJob] = useState<JobListing | null>(null);
-  const [selectedCvId, setSelectedCvId] = useState<number | ''>('');
   const [coverLetter, setCoverLetter] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState('');
@@ -76,21 +79,21 @@ export const JobsView: React.FC<JobsViewProps> = ({ initialQuery, onClearInitial
       if (workArrangement) qs.set('workArrangement', workArrangement);
       if (employmentType) qs.set('employmentType', employmentType);
       if (experienceLevel) qs.set('experienceLevel', experienceLevel);
+      if (postedWithin) qs.set('postedWithin', postedWithin);
+      if (verifiedOnly) qs.set('verifiedOnly', 'true');
 
-      const [jobsRes, appsRes, careerRes] = await Promise.all([
+      const [jobsRes, appsRes] = await Promise.all([
         apiFetch<{ jobs: JobListing[] }>(`/api/jobs?${qs.toString()}`),
         apiFetch<{ applications: MyApplication[] }>('/api/jobs/applications/me'),
-        apiFetch<{ cvDocuments: CvDoc[] }>('/api/career/overview'),
       ]);
       const list = jobsRes.jobs || [];
       setJobs(list);
       setSelectedJob((prev) => list.find((j) => j.id === prev?.id) || list[0] || null);
       setMyApps(appsRes.applications || []);
-      setCvDocs(careerRes.cvDocuments || []);
     } finally {
       setLoading(false);
     }
-  }, [apiFetch, country, employmentType, experienceLevel, q, workArrangement]);
+  }, [apiFetch, country, employmentType, experienceLevel, postedWithin, q, verifiedOnly, workArrangement]);
 
   useEffect(() => {
     loadJobs();
@@ -110,7 +113,6 @@ export const JobsView: React.FC<JobsViewProps> = ({ initialQuery, onClearInitial
       await apiFetch(`/api/jobs/${applyJob.id}/apply`, {
         method: 'POST',
         body: JSON.stringify({
-          cvDocumentId: selectedCvId ? Number(selectedCvId) : null,
           coverLetter,
         }),
       });
@@ -179,30 +181,58 @@ export const JobsView: React.FC<JobsViewProps> = ({ initialQuery, onClearInitial
           ) : (
             <div className="divide-y divide-slate-200 dark:divide-slate-800">
               {myApps.map((app) => (
-                <div key={app.id} className="flex flex-wrap items-center justify-between gap-4 p-4">
-                  <div>
-                    <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                      {app.job.title}
-                    </h3>
-                    <p className="mt-0.5 text-xs text-slate-500">
-                      {app.organization.name} · {app.job.location}, {app.job.country} ·{' '}
-                      <span className="capitalize">{app.job.workArrangement}</span>
-                    </p>
-                    <p className="mt-1 font-mono text-xs text-slate-400 tabular-nums">
-                      Applied {new Date(app.createdAt).toLocaleDateString()} · Stage:{' '}
-                      <strong className="uppercase text-slate-700 dark:text-slate-200">
-                        {app.stage}
-                      </strong>
-                    </p>
+                <div key={app.id} className="space-y-3 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                          {app.job.title}
+                        </h3>
+                        {app.organization.verified && (
+                          <CheckCircle2 className="h-3.5 w-3.5 text-[#0F5C4D] dark:text-emerald-400" />
+                        )}
+                      </div>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        {app.organization.name} · {app.job.location}, {app.job.country} ·{' '}
+                        <span className="capitalize">{app.job.workArrangement}</span>
+                      </p>
+                      <p className="mt-1 font-mono text-xs text-slate-400 tabular-nums">
+                        Applied {new Date(app.createdAt).toLocaleDateString()} · Stage:{' '}
+                        <strong className="uppercase text-slate-700 dark:text-slate-200">
+                          {app.stage}
+                        </strong>
+                      </p>
+                    </div>
+                    {!['offer', 'hired', 'rejected', 'withdrawn'].includes(app.stage) && (
+                      <button
+                        type="button"
+                        onClick={() => handleWithdraw(app.id)}
+                        className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300"
+                      >
+                        Withdraw Application
+                      </button>
+                    )}
                   </div>
-                  {!['offer', 'rejected', 'withdrawn'].includes(app.stage) && (
-                    <button
-                      type="button"
-                      onClick={() => handleWithdraw(app.id)}
-                      className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300"
-                    >
-                      Withdraw Application
-                    </button>
+
+                  {app.history && app.history.length > 0 && (
+                    <div className="border-t border-slate-100 pt-2.5 dark:border-slate-800">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                        Stage Progress
+                      </p>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600 dark:text-slate-300">
+                        {app.history.map((step, idx) => (
+                          <span key={step.id} className="inline-flex items-center gap-1.5">
+                            {idx > 0 && <span className="text-slate-400" aria-hidden="true">-&gt;</span>}
+                            <span className="font-medium capitalize text-slate-800 dark:text-slate-100">
+                              {step.toStage}
+                            </span>
+                            <span className="font-mono text-[11px] text-slate-400 tabular-nums">
+                              ({new Date(step.createdAt).toLocaleDateString()})
+                            </span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
                   )}
                 </div>
               ))}
@@ -212,60 +242,117 @@ export const JobsView: React.FC<JobsViewProps> = ({ initialQuery, onClearInitial
       ) : (
         <>
           {/* Filter Bar */}
-          <div className="grid grid-cols-1 gap-2 rounded-xl border border-slate-200 bg-white p-3 sm:grid-cols-2 lg:grid-cols-6 dark:border-slate-800 dark:bg-slate-900">
-            <div className="relative lg:col-span-2">
-              <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-              <input
-                type="text"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Role, skill, or organization..."
-                className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-xs dark:border-slate-700 dark:bg-slate-950"
-              />
+          <div className="space-y-2.5 rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-6">
+              <div className="relative lg:col-span-2">
+                <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                <input
+                  type="text"
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="Role, skill, or organization..."
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-8 text-xs dark:border-slate-700 dark:bg-slate-950"
+                />
+                {q.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setQ('')}
+                    aria-label="Clear job search"
+                    className="absolute right-2 top-2 rounded p-0.5 text-slate-400 hover:bg-slate-200/70 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+              <select
+                value={country}
+                onChange={(e) => setCountry(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs dark:border-slate-700 dark:bg-slate-950"
+              >
+                <option value="">All Countries</option>
+                <option value="Eswatini">Eswatini</option>
+                <option value="South Africa">South Africa</option>
+                <option value="Botswana">Botswana</option>
+                <option value="Remote / Global">Remote / Global</option>
+              </select>
+              <select
+                value={workArrangement}
+                onChange={(e) => setWorkArrangement(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs dark:border-slate-700 dark:bg-slate-950"
+              >
+                <option value="">All Arrangements</option>
+                <option value="remote">Remote</option>
+                <option value="hybrid">Hybrid</option>
+                <option value="onsite">Onsite</option>
+              </select>
+              <select
+                value={employmentType}
+                onChange={(e) => setEmploymentType(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs dark:border-slate-700 dark:bg-slate-950"
+              >
+                <option value="">All Types</option>
+                <option value="full-time">Full-time</option>
+                <option value="part-time">Part-time</option>
+                <option value="contract">Contract</option>
+                <option value="internship">Internship</option>
+              </select>
+              <select
+                value={experienceLevel}
+                onChange={(e) => setExperienceLevel(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs dark:border-slate-700 dark:bg-slate-950"
+              >
+                <option value="">All Levels</option>
+                <option value="entry">Entry</option>
+                <option value="mid">Mid</option>
+                <option value="senior">Senior</option>
+                <option value="executive">Executive</option>
+              </select>
             </div>
-            <select
-              value={country}
-              onChange={(e) => setCountry(e.target.value)}
-              className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs dark:border-slate-700 dark:bg-slate-950"
-            >
-              <option value="">All Countries</option>
-              <option value="Eswatini">Eswatini</option>
-              <option value="South Africa">South Africa</option>
-              <option value="Botswana">Botswana</option>
-              <option value="Remote / Global">Remote / Global</option>
-            </select>
-            <select
-              value={workArrangement}
-              onChange={(e) => setWorkArrangement(e.target.value)}
-              className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs dark:border-slate-700 dark:bg-slate-950"
-            >
-              <option value="">All Arrangements</option>
-              <option value="remote">Remote</option>
-              <option value="hybrid">Hybrid</option>
-              <option value="onsite">Onsite</option>
-            </select>
-            <select
-              value={employmentType}
-              onChange={(e) => setEmploymentType(e.target.value)}
-              className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs dark:border-slate-700 dark:bg-slate-950"
-            >
-              <option value="">All Types</option>
-              <option value="full-time">Full-time</option>
-              <option value="part-time">Part-time</option>
-              <option value="contract">Contract</option>
-              <option value="internship">Internship</option>
-            </select>
-            <select
-              value={experienceLevel}
-              onChange={(e) => setExperienceLevel(e.target.value)}
-              className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs dark:border-slate-700 dark:bg-slate-950"
-            >
-              <option value="">All Levels</option>
-              <option value="entry">Entry</option>
-              <option value="mid">Mid</option>
-              <option value="senior">Senior</option>
-              <option value="executive">Executive</option>
-            </select>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-2 text-xs dark:border-slate-800">
+              <div className="flex flex-wrap items-center gap-4">
+                <label className="inline-flex cursor-pointer items-center gap-2 text-slate-600 dark:text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={verifiedOnly}
+                    onChange={(e) => setVerifiedOnly(e.target.checked)}
+                    className="h-3.5 w-3.5 rounded border-slate-300 text-[#0F5C4D] focus:ring-[#0F5C4D]"
+                  />
+                  <span>Verified employers only</span>
+                </label>
+
+                <label className="inline-flex items-center gap-2 text-slate-600 dark:text-slate-300">
+                  <span>Posted:</span>
+                  <select
+                    value={postedWithin}
+                    onChange={(e) => setPostedWithin(e.target.value)}
+                    className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-950"
+                  >
+                    <option value="">Anytime</option>
+                    <option value="7d">Last 7 days</option>
+                    <option value="30d">Last 30 days</option>
+                  </select>
+                </label>
+              </div>
+
+              {(q || country || workArrangement || employmentType || experienceLevel || postedWithin || verifiedOnly) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQ('');
+                    setCountry('');
+                    setWorkArrangement('');
+                    setEmploymentType('');
+                    setExperienceLevel('');
+                    setPostedWithin('');
+                    setVerifiedOnly(false);
+                  }}
+                  className="font-medium text-[#0F5C4D] hover:underline dark:text-emerald-400"
+                >
+                  Reset filters
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
@@ -297,8 +384,12 @@ export const JobsView: React.FC<JobsViewProps> = ({ initialQuery, onClearInitial
                         </span>
                       )}
                     </div>
-                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
-                      {job.organization.name} · {job.location}, {job.country}
+                    <p className="mt-1 flex items-center gap-1 text-xs text-slate-600 dark:text-slate-400">
+                      <span>{job.organization.name}</span>
+                      {job.organization.verified && (
+                        <CheckCircle2 className="h-3 w-3 shrink-0 text-[#0F5C4D] dark:text-emerald-400" />
+                      )}
+                      <span>· {job.location}, {job.country}</span>
                     </p>
                     <p className="mt-1 text-xs text-slate-400 capitalize">
                       {job.workArrangement} · {job.employmentType} · {job.experienceLevel}
@@ -407,24 +498,27 @@ export const JobsView: React.FC<JobsViewProps> = ({ initialQuery, onClearInitial
               Apply for {applyJob.title}
             </h3>
             <p className="text-xs text-slate-500">{applyJob.organization.name}</p>
+
+            {/* Profile Snapshot shared with recruiter */}
+            <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Profile Snapshot Included
+              </p>
+              <p className="mt-1 text-xs font-semibold text-slate-900 dark:text-white">
+                {user?.fullName}
+              </p>
+              <p className="text-xs text-slate-600 dark:text-slate-400">
+                {profile?.headline || 'Professional on ResuMind'} · {profile?.location || 'Mbabane'},{' '}
+                {profile?.country || 'Eswatini'}
+              </p>
+              {profile?.skills && profile.skills.length > 0 && (
+                <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                  Skills: {profile.skills.slice(0, 6).join(' · ')}
+                </p>
+              )}
+            </div>
+
             <form onSubmit={handleApplySubmit} className="mt-4 space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
-                  Attach CV from Career Studio (optional)
-                </label>
-                <select
-                  value={selectedCvId}
-                  onChange={(e) => setSelectedCvId(e.target.value ? Number(e.target.value) : '')}
-                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
-                >
-                  <option value="">Use my ResuMind profile only</option>
-                  {cvDocs.map((doc) => (
-                    <option key={doc.id} value={doc.id}>
-                      {doc.title} ({doc.fileName})
-                    </option>
-                  ))}
-                </select>
-              </div>
               <div>
                 <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
                   Cover Note

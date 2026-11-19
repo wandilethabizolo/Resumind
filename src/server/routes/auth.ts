@@ -1,10 +1,12 @@
 import crypto from 'crypto';
 import { Router } from 'express';
-import { and, desc, eq, ne } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne } from 'drizzle-orm';
 import { db, runQuery } from '../../db/index.ts';
 import {
+  conversationMembers,
   cvDocuments,
   jobApplications,
+  messages,
   notifications,
   organizationMembers,
   organizations,
@@ -80,12 +82,48 @@ router.post('/session', requireAuth, async (req: AuthRequest, res) => {
         )
     );
 
-    const unreadNotifs = await runQuery('auth.unreadNotifs', () =>
-      db
-        .select()
-        .from(notifications)
-        .where(and(eq(notifications.userId, dbUser.id), eq(notifications.read, false)))
-    );
+    const [unreadNotifs, myConvMems] = await Promise.all([
+      runQuery('auth.unreadNotifs', () =>
+        db
+          .select()
+          .from(notifications)
+          .where(and(eq(notifications.userId, dbUser.id), eq(notifications.read, false)))
+      ),
+      runQuery('auth.myConvMems', () =>
+        db
+          .select({
+            conversationId: conversationMembers.conversationId,
+            lastReadAt: conversationMembers.lastReadAt,
+          })
+          .from(conversationMembers)
+          .where(eq(conversationMembers.userId, dbUser.id))
+      ),
+    ]);
+
+    let unreadMessages = 0;
+    if (myConvMems.length > 0) {
+      const convMsgs = await runQuery('auth.recentConvMsgs', () =>
+        db
+          .select({
+            conversationId: messages.conversationId,
+            senderId: messages.senderId,
+            createdAt: messages.createdAt,
+          })
+          .from(messages)
+          .where(
+            inArray(
+              messages.conversationId,
+              myConvMems.map((m) => m.conversationId)
+            )
+          )
+      );
+      const readAtMap = new Map(myConvMems.map((m) => [m.conversationId, m.lastReadAt]));
+      for (const msg of convMsgs) {
+        if (msg.senderId !== dbUser.id && msg.createdAt > (readAtMap.get(msg.conversationId) || new Date(0))) {
+          unreadMessages += 1;
+        }
+      }
+    }
 
     res.json({
       sessionKey,
@@ -103,6 +141,7 @@ router.post('/session', requireAuth, async (req: AuthRequest, res) => {
       profile: profile || null,
       organizations: orgRows.map((r) => ({ ...r.organization, memberRole: r.memberRole })),
       unreadNotifications: unreadNotifs.length,
+      unreadMessages,
     });
   } catch (error) {
     console.error('Session initialization error:', error);

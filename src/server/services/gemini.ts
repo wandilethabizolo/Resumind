@@ -18,9 +18,15 @@ function getAiClient(): GoogleGenAI {
   });
 }
 
-const FAIR_USE_LIMIT_PER_HOUR = 40;
+export const FAIR_USE_LIMIT_PER_HOUR = 40;
 
-export async function enforceAiFairUse(userId: number, feature: string): Promise<void> {
+export interface FairUseStats {
+  used: number;
+  limit: number;
+  remaining: number;
+}
+
+export async function getAiFairUseStats(userId: number): Promise<FairUseStats> {
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
   const rows = await runQuery('ai.fairUseCount', () =>
     db
@@ -29,9 +35,18 @@ export async function enforceAiFairUse(userId: number, feature: string): Promise
       .where(and(eq(aiUsageEvents.userId, userId), gte(aiUsageEvents.createdAt, oneHourAgo)))
   );
   const used = Number(rows[0]?.total ?? 0);
-  if (used >= FAIR_USE_LIMIT_PER_HOUR) {
+  return {
+    used,
+    limit: FAIR_USE_LIMIT_PER_HOUR,
+    remaining: Math.max(0, FAIR_USE_LIMIT_PER_HOUR - used),
+  };
+}
+
+export async function enforceAiFairUse(userId: number, feature: string): Promise<FairUseStats> {
+  const stats = await getAiFairUseStats(userId);
+  if (stats.used >= FAIR_USE_LIMIT_PER_HOUR) {
     const err = new Error(
-      'Fair-use hourly rate limit reached for Career Studio AI tools. Please try again shortly.'
+      'Fair-use hourly rate limit reached for AI tools. Please try again shortly.'
     ) as Error & { status?: number };
     err.status = 429;
     throw err;
@@ -40,112 +55,14 @@ export async function enforceAiFairUse(userId: number, feature: string): Promise
   await runQuery('ai.fairUseLog', () =>
     db.insert(aiUsageEvents).values({ userId, feature })
   );
-}
 
-export async function analyzeCvWithGemini(params: {
-  cvText: string;
-  targetJobTitle?: string;
-  jobDescription?: string;
-}) {
-  const ai = getAiClient();
-  const prompt = [
-    'Analyze the following CV/resume for clarity, measurable impact, structure, and role fit.',
-    params.targetJobTitle ? `Target Role: ${params.targetJobTitle}` : '',
-    params.jobDescription ? `Job Description:\n${params.jobDescription}` : '',
-    `CV Content:\n${params.cvText}`,
-    'Return structured, honest, constructive career feedback. Frame recommendations as practical assistance rather than guaranteed job outcomes.',
-  ]
-    .filter(Boolean)
-    .join('\n\n');
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
-    contents: prompt,
-    config: {
-      systemInstruction:
-        'You are a senior career strategist advising professionals in Eswatini, Southern Africa, and global markets. Be specific, constructive, and practical.',
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          summary: { type: Type.STRING, description: 'Concise executive assessment of the CV.' },
-          strengths: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-            description: 'Key strengths observed in the CV.',
-          },
-          weaknesses: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-            description: 'Gaps, missing metrics, or clarity issues.',
-          },
-          recommendations: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-            description: 'Actionable steps to improve the CV.',
-          },
-          tailoredBullets: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-            description: 'Suggested rewritten accomplishment bullet points.',
-          },
-          matchNotes: {
-            type: Type.STRING,
-            description: 'Notes on alignment with the target role or job description.',
-          },
-        },
-        required: [
-          'summary',
-          'strengths',
-          'weaknesses',
-          'recommendations',
-          'tailoredBullets',
-          'matchNotes',
-        ],
-      },
-    },
-  });
-
-  const parsed = JSON.parse((response.text ?? '{}').trim());
   return {
-    summary: String(parsed.summary ?? ''),
-    strengths: Array.isArray(parsed.strengths) ? parsed.strengths.map(String) : [],
-    weaknesses: Array.isArray(parsed.weaknesses) ? parsed.weaknesses.map(String) : [],
-    recommendations: Array.isArray(parsed.recommendations)
-      ? parsed.recommendations.map(String)
-      : [],
-    tailoredBullets: Array.isArray(parsed.tailoredBullets)
-      ? parsed.tailoredBullets.map(String)
-      : [],
-    matchNotes: String(parsed.matchNotes ?? ''),
+    used: stats.used + 1,
+    limit: FAIR_USE_LIMIT_PER_HOUR,
+    remaining: Math.max(0, FAIR_USE_LIMIT_PER_HOUR - (stats.used + 1)),
   };
 }
 
-export async function generateCoverLetterWithGemini(params: {
-  candidateName: string;
-  headline: string;
-  cvSummary: string;
-  targetRole: string;
-  companyName: string;
-  jobDescription?: string;
-  tone?: string;
-}) {
-  const ai = getAiClient();
-  const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
-    contents: `Write a tailored, authentic cover letter for ${params.candidateName} (${params.headline}) applying for "${params.targetRole}" at "${params.companyName}".
-Tone: ${params.tone || 'Professional and concise'}.
-Candidate background:\n${params.cvSummary}
-${params.jobDescription ? `Job details:\n${params.jobDescription}` : ''}
-Avoid clichés and unsupported claims. Keep it 3–4 focused paragraphs ready for editing.`,
-    config: {
-      systemInstruction:
-        'You are an expert career writer. Produce clear, human-sounding cover letters tailored to the candidate and organization.',
-    },
-  });
-
-  return (response.text ?? '').trim();
-}
 
 export async function generateInterviewQuestionsWithGemini(params: {
   targetRole: string;
@@ -185,84 +102,100 @@ Mix behavioral, technical/domain, and problem-solving questions.`,
     : [];
 }
 
-export async function evaluateInterviewAnswerWithGemini(params: {
-  targetRole: string;
-  question: string;
-  answer: string;
+
+export async function draftJobDescriptionWithGemini(params: {
+  title: string;
+  department: string;
+  location: string;
+  country: string;
+  employmentType: string;
+  experienceLevel: string;
+  notes?: string;
 }) {
   const ai = getAiClient();
   const response = await ai.models.generateContent({
     model: 'gemini-4-hydrogen',
-    contents: `Role: ${params.targetRole}
-Interview Question: ${params.question}
-Candidate Answer: ${params.answer}
+    contents: `Draft an inclusive, structured job vacancy for a company hiring in ${params.location}, ${params.country}.
+Role Title: ${params.title}
+Department: ${params.department}
+Employment Type: ${params.employmentType}
+Experience Level: ${params.experienceLevel}
+Additional Hiring Context: ${params.notes || 'Standard role scope'}
 
-Evaluate clarity, structure (such as STAR), specificity, and relevance. Provide constructive feedback and 2-3 specific improvement suggestions.`,
+Return clear, non-discriminatory role responsibilities and objective skill/experience requirements ready for recruiter review.`,
     config: {
+      systemInstruction:
+        'You are an HR recruitment specialist. Write clear, objective job descriptions and requirements without biased or exclusionary language.',
       responseMimeType: 'application/json',
       responseSchema: {
         type: Type.OBJECT,
         properties: {
-          evaluation: { type: Type.STRING },
-          improvements: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
+          description: { type: Type.STRING, description: 'Role overview and key responsibilities.' },
+          requirements: {
+            type: Type.STRING,
+            description: 'Objective qualifications, technical skills, and experience criteria.',
           },
         },
-        required: ['evaluation', 'improvements'],
+        required: ['description', 'requirements'],
       },
     },
   });
 
   const parsed = JSON.parse((response.text ?? '{}').trim());
   return {
-    evaluation: String(parsed.evaluation ?? ''),
-    improvements: Array.isArray(parsed.improvements)
-      ? parsed.improvements.map(String)
-      : [],
+    description: String(parsed.description ?? ''),
+    requirements: String(parsed.requirements ?? ''),
   };
 }
 
-export async function generateCareerGuidanceWithGemini(params: {
-  currentRole: string;
-  skills: string[];
-  goals: string;
-  location: string;
+export async function explainCandidateMatchWithGemini(params: {
+  jobTitle: string;
+  jobDescription: string;
+  jobRequirements: string;
+  candidateHeadline: string;
+  candidateSkills: string[];
+  cvText: string;
 }) {
   const ai = getAiClient();
   const response = await ai.models.generateContent({
     model: 'gemini-4-hydrogen',
-    contents: `Provide practical career development guidance for a professional based in ${params.location}.
-Current position/focus: ${params.currentRole}
-Current skills: ${params.skills.join(', ') || 'Not specified'}
-Career goal: ${params.goals}
+    contents: `Provide an advisory, explainable skills and experience comparison between this role and candidate profile/CV.
+Do NOT make hiring decisions, reject candidates, or reference protected characteristics.
 
-Include:
-1. High-value adjacent skills to develop
-2. Recommended learning pathways & certifications
-3. Practical networking & portfolio actions tailored to Eswatini, SADC, and remote international markets.`,
+Role Title: ${params.jobTitle}
+Role Description: ${params.jobDescription}
+Role Requirements: ${params.jobRequirements || 'Not specified'}
+
+Candidate Headline: ${params.candidateHeadline}
+Listed Skills: ${params.candidateSkills.join(', ') || 'None listed'}
+Submitted CV Extract:
+${params.cvText.slice(0, 6000) || 'No CV text attached'}`,
     config: {
       systemInstruction:
-        'You are a pragmatic career advisor. Provide realistic, actionable guidance as assistance for user review.',
+        'You provide transparent, advisory skill-gap explanations for human recruiters. Focus strictly on job-relevant skills, experience evidence, and interview follow-up topics.',
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          matchSummary: { type: Type.STRING },
+          matchedSkills: { type: Type.ARRAY, items: { type: Type.STRING } },
+          missingEvidence: { type: Type.ARRAY, items: { type: Type.STRING } },
+          interviewFocusAreas: { type: Type.ARRAY, items: { type: Type.STRING } },
+        },
+        required: ['matchSummary', 'matchedSkills', 'missingEvidence', 'interviewFocusAreas'],
+      },
     },
   });
 
-  return (response.text ?? '').trim();
-}
-
-export async function generateDocumentWithGemini(params: {
-  docType: string;
-  title: string;
-  context: string;
-}) {
-  const ai = getAiClient();
-  const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
-    contents: `Draft a polished professional ${params.docType} titled "${params.title}".
-Context and key points:
-${params.context}
-Return clean, well-structured prose ready for editing and export.`,
-  });
-
-  return (response.text ?? '').trim();
+  const parsed = JSON.parse((response.text ?? '{}').trim());
+  return {
+    matchSummary: String(parsed.matchSummary ?? ''),
+    matchedSkills: Array.isArray(parsed.matchedSkills) ? parsed.matchedSkills.map(String) : [],
+    missingEvidence: Array.isArray(parsed.missingEvidence)
+      ? parsed.missingEvidence.map(String)
+      : [],
+    interviewFocusAreas: Array.isArray(parsed.interviewFocusAreas)
+      ? parsed.interviewFocusAreas.map(String)
+      : [],
+  };
 }

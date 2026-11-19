@@ -77,6 +77,21 @@ export function initializeSocketServer(httpServer: HttpServer, allowedOrigins: s
         socket.leave(`conversation:${conversationId}`);
       }
     });
+
+    socket.on(
+      'conversation:typing',
+      (payload: { conversationId?: number; isTyping?: boolean }) => {
+        const conversationId = Number(payload?.conversationId);
+        if (!Number.isInteger(conversationId) || conversationId <= 0) return;
+        const room = `conversation:${conversationId}`;
+        if (!socket.rooms.has(room)) return;
+        socket.to(room).emit('conversation:typing', {
+          conversationId,
+          userId,
+          isTyping: Boolean(payload?.isTyping),
+        });
+      }
+    );
   });
 
   return ioInstance;
@@ -88,4 +103,8 @@ export function emitToUser(userId: number, event: string, payload: unknown) {
 
 export function emitToConversation(conversationId: number, event: string, payload: unknown) {
   ioInstance?.to(`conversation:${conversationId}`).emit(event, payload);
+}
+
+export function emitToAll(event: string, payload: unknown) {
+  ioInstance?.emit(event, payload);
 }

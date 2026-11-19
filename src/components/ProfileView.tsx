@@ -6,7 +6,6 @@ import {
   Download,
   Edit3,
   ExternalLink,
-  Heart,
   MapPin,
   MessageSquare,
   Plus,
@@ -19,8 +18,14 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { readAndCompressImage } from '../lib/imageUpload';
-import { EducationItem, ExperienceItem, FeedPost, UserProfile } from '../types';
+import {
+  AuthenticatedPostVideo,
+  PostDownloadMenu,
+  PostShareMenu,
+} from '../lib/postMedia';
+import { EducationItem, ExperienceItem, FeedPost, ReactionType, UserProfile } from '../types';
 import { PostModal } from './PostModal';
+import { PostReactionButton, ReactionSummary } from './ReactionPicker';
 
 interface SessionRow {
   id: number;
@@ -248,12 +253,28 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     await loadProfileAndPosts();
   };
 
-  const handleReaction = async (postId: number) => {
-    await apiFetch(`/api/feed/${postId}/react`, {
+  const handleReaction = async (postId: number, type: ReactionType = 'like') => {
+    const res = await apiFetch<{
+      reacted: boolean;
+      type: string | null;
+      reactionCount: number;
+      reactionBreakdown: Partial<Record<ReactionType, number>>;
+    }>(`/api/feed/${postId}/react`, {
       method: 'POST',
-      body: JSON.stringify({ type: 'like' }),
+      body: JSON.stringify({ type }),
     });
-    await loadProfileAndPosts();
+    setMemberPosts((prev) =>
+      prev.map((p) =>
+        p.id === postId
+          ? {
+              ...p,
+              userReaction: res.type,
+              reactionCount: res.reactionCount,
+              reactionBreakdown: res.reactionBreakdown,
+            }
+          : p
+      )
+    );
   };
 
   const handleDeletePost = async (postId: number) => {
@@ -421,7 +442,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 >
                   {meta?.isFollowing ? 'Following' : 'Follow'}
                 </button>
-                {onOpenConversation && targetUserId && (
+                {onOpenConversation && targetUserId && meta?.connectionStatus === 'connected' && (
                   <button
                     type="button"
                     onClick={() => onOpenConversation(targetUserId)}
@@ -727,21 +748,30 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                         />
                       </div>
                     )}
-                    <div className="mt-3 flex items-center gap-4 text-xs text-slate-500">
-                      <button
-                        type="button"
-                        onClick={() => handleReaction(post.id)}
-                        className={`inline-flex items-center gap-1 font-medium ${
-                          post.userReaction ? 'text-[#0F5C4D] dark:text-emerald-400' : ''
-                        }`}
-                      >
-                        <Heart className="h-3.5 w-3.5" />
-                        <span className="font-mono tabular-nums">{post.reactionCount}</span>
-                      </button>
-                      <span className="inline-flex items-center gap-1">
-                        <MessageSquare className="h-3.5 w-3.5" />
-                        <span className="font-mono tabular-nums">{post.commentCount}</span>
-                      </span>
+                    {post.videoUrl && (
+                      <AuthenticatedPostVideo
+                        videoUrl={post.videoUrl}
+                        durationSeconds={post.videoDurationSeconds}
+                      />
+                    )}
+                    <ReactionSummary
+                      reactionCount={post.reactionCount}
+                      reactionBreakdown={post.reactionBreakdown}
+                    />
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+                      <div className="flex items-center gap-4">
+                        <PostReactionButton
+                          userReaction={post.userReaction}
+                          reactionCount={post.reactionCount}
+                          onReact={(type) => handleReaction(post.id, type)}
+                        />
+                        <span className="inline-flex items-center gap-1">
+                          <MessageSquare className="h-3.5 w-3.5" />
+                          <span className="font-mono tabular-nums">{post.commentCount}</span>
+                        </span>
+                        <PostShareMenu post={post} />
+                      </div>
+                      <PostDownloadMenu post={post} />
                     </div>
                   </article>
                 ))}

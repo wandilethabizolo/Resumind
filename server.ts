@@ -14,15 +14,24 @@ import jobsRoutes from './src/server/routes/jobs.ts';
 import employersRoutes from './src/server/routes/employers.ts';
 import messagingRoutes from './src/server/routes/messaging.ts';
 import notificationsRoutes from './src/server/routes/notifications.ts';
-import careerRoutes from './src/server/routes/career.ts';
 import reportsRoutes from './src/server/routes/reports.ts';
 import { initializeSocketServer } from './src/server/socket.ts';
 
 async function bootstrap() {
   const app = express();
   const httpServer = http.createServer(app);
-  const port = Number(process.env.PORT) || 3000;
   const isProd = process.env.NODE_ENV === 'production';
+  const argPortIdx = process.argv.indexOf('--port');
+  const cliPort = argPortIdx !== -1 ? Number(process.argv[argPortIdx + 1]) : NaN;
+  const envPort = Number(process.env.PORT);
+  const nginxPort = Number(process.env.NGINX_PORT);
+  const defaultPort = Number(process.env.DEFAULT_APP_PORT) || 3000;
+  const port =
+    Number.isFinite(cliPort) && cliPort > 0
+      ? cliPort
+      : !isProd || (Number.isFinite(envPort) && envPort === nginxPort)
+        ? defaultPort
+        : envPort || defaultPort;
 
   app.set('trust proxy', 1);
 
@@ -87,7 +96,6 @@ async function bootstrap() {
   app.use('/api/organizations', employersRoutes);
   app.use('/api/conversations', messagingRoutes);
   app.use('/api/notifications', notificationsRoutes);
-  app.use('/api/career', careerRoutes);
   app.use('/api/reports', reportsRoutes);
 
   // API 404 handler

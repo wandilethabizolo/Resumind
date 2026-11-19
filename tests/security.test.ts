@@ -40,9 +40,29 @@ test('API unauthorized access, payment removal, and public endpoints (live serve
     ['GET', '/api/network/overview'],
     ['GET', '/api/jobs/applications/me'],
     ['GET', '/api/organizations'],
+    ['GET', '/api/organizations/1/talent'],
+    ['POST', '/api/organizations/1/talent/1/invite'],
+    ['GET', '/api/organizations/1/talent-pools'],
+    ['GET', '/api/organizations/1/interviews'],
+    ['GET', '/api/organizations/1/analytics'],
+    ['PATCH', '/api/organizations/1/members/1'],
+    ['POST', '/api/organizations/1/ai/job-draft'],
+    ['POST', '/api/organizations/1/ai/match-candidate'],
+    ['POST', '/api/organizations/1/ai/interview-questions'],
     ['GET', '/api/conversations'],
+    ['POST', '/api/conversations/1/read'],
+    ['DELETE', '/api/conversations/1/messages/1'],
+    ['DELETE', '/api/conversations/1'],
     ['GET', '/api/notifications'],
-    ['GET', '/api/career/overview'],
+    ['GET', '/api/jobs'],
+    ['GET', '/api/feed'],
+    ['POST', '/api/feed/media/video'],
+    ['GET', '/api/feed/media/video/sample.mp4'],
+    ['GET', '/api/feed/1/comments'],
+    ['POST', '/api/feed/comments/1/like'],
+    ['GET', '/api/profiles'],
+    ['GET', '/api/profiles/trending'],
+    ['GET', '/api/profiles/1'],
     ['POST', '/api/reports'],
   ] as const;
 
@@ -51,28 +71,28 @@ test('API unauthorized access, payment removal, and public endpoints (live serve
     assert.equal(res.status, 401, `Expected 401 on ${method} ${path}, got ${res.status}`);
   }
 
-  // 2. Payment/credit and removed admin endpoints MUST NOT exist (404)
+  // 2. Payment/credit, removed admin, and removed Career Studio endpoints MUST NOT exist (404)
   const removedRoutes = [
-    '/api/payments/checkout',
-    '/api/payments/webhook',
-    '/api/wallet',
-    '/api/credits/purchase',
-    '/api/subscriptions',
-    '/api/admin/overview',
-  ];
-  for (const path of removedRoutes) {
-    const res = await fetch(`${baseUrl}${path}`);
-    assert.equal(res.status, 404, `Removed route ${path} must return 404, got ${res.status}`);
+    ['GET', '/api/payments/checkout'],
+    ['GET', '/api/payments/webhook'],
+    ['GET', '/api/wallet'],
+    ['GET', '/api/credits/purchase'],
+    ['GET', '/api/subscriptions'],
+    ['GET', '/api/admin/overview'],
+    ['GET', '/api/career/overview'],
+    ['POST', '/api/career/parse-cv'],
+    ['POST', '/api/career/analyze-cv'],
+    ['POST', '/api/career/cv-versions'],
+    ['POST', '/api/career/cv-documents'],
+  ] as const;
+  for (const [method, path] of removedRoutes) {
+    const res = await fetch(`${baseUrl}${path}`, { method });
+    assert.equal(res.status, 404, `Removed route ${method} ${path} must return 404, got ${res.status}`);
   }
 
-  // 3. Public read endpoints return 200 and valid array structures
-  const jobsRes = await fetch(`${baseUrl}/api/jobs`);
-  assert.equal(jobsRes.status, 200);
-  const jobsJson = (await jobsRes.json()) as { jobs: unknown[] };
-  assert.ok(Array.isArray(jobsJson.jobs));
-
-  const feedRes = await fetch(`${baseUrl}/api/feed`);
-  assert.equal(feedRes.status, 200);
-  const feedJson = (await feedRes.json()) as { posts: unknown[] };
-  assert.ok(Array.isArray(feedJson.posts));
+  // 3. Health endpoint returns 200 without leaking user-posted content
+  const healthRes = await fetch(`${baseUrl}/api/health`);
+  assert.equal(healthRes.status, 200);
+  const healthJson = (await healthRes.json()) as { status: string };
+  assert.equal(healthJson.status, 'ok');
 });

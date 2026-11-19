@@ -198,6 +198,8 @@ export const posts = pgTable(
     }),
     content: text('content').notNull(),
     imageUrl: text('image_url'),
+    videoUrl: text('video_url'),
+    videoDurationSeconds: integer('video_duration_seconds'),
     topic: text('topic').notNull().default('Career Growth'),
     postType: text('post_type').notNull().default('update'), // 'update' | 'achievement' | 'article' | 'repost'
     repostOfId: integer('repost_of_id'),
@@ -261,6 +263,21 @@ export const comments = pgTable(
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (table) => [index('comments_post_idx').on(table.postId)]
+);
+
+export const commentReactions = pgTable(
+  'comment_reactions',
+  {
+    id: serial('id').primaryKey(),
+    commentId: integer('comment_id')
+      .references(() => comments.id, { onDelete: 'cascade' })
+      .notNull(),
+    userId: integer('user_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('comment_reaction_unique_idx').on(table.commentId, table.userId)]
 );
 
 export const connections = pgTable(
@@ -329,6 +346,7 @@ export const jobs = pgTable(
       .references(() => users.id)
       .notNull(),
     title: text('title').notNull(),
+    department: text('department').notNull().default('General'),
     description: text('description').notNull(),
     requirements: text('requirements').notNull().default(''),
     location: text('location').notNull(),
@@ -337,7 +355,7 @@ export const jobs = pgTable(
     employmentType: text('employment_type').notNull().default('full-time'), // 'full-time' | 'part-time' | 'contract' | 'internship'
     experienceLevel: text('experience_level').notNull().default('mid'), // 'entry' | 'mid' | 'senior' | 'executive'
     salaryRange: text('salary_range').notNull().default(''),
-    status: text('status').notNull().default('published'), // 'draft' | 'published' | 'closed' | 'moderated'
+    status: text('status').notNull().default('published'), // 'draft' | 'published' | 'paused' | 'closed' | 'archived' | 'moderated'
     expiresAt: timestamp('expires_at'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -510,7 +528,7 @@ export const jobApplications = pgTable(
       onDelete: 'set null',
     }),
     coverLetter: text('cover_letter').notNull().default(''),
-    stage: text('stage').notNull().default('submitted'), // 'submitted' | 'screening' | 'interview' | 'offer' | 'rejected' | 'withdrawn'
+    stage: text('stage').notNull().default('submitted'), // 'submitted' | 'screening' | 'shortlisted' | 'interview' | 'offer' | 'hired' | 'rejected' | 'withdrawn'
     employerNotes: text('employer_notes').notNull().default(''),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -519,6 +537,81 @@ export const jobApplications = pgTable(
     uniqueIndex('job_application_unique_idx').on(table.jobId, table.applicantId),
     index('job_applications_applicant_idx').on(table.applicantId),
   ]
+);
+
+export const applicationHistory = pgTable(
+  'application_history',
+  {
+    id: serial('id').primaryKey(),
+    applicationId: integer('application_id')
+      .references(() => jobApplications.id, { onDelete: 'cascade' })
+      .notNull(),
+    fromStage: text('from_stage').notNull().default(''),
+    toStage: text('to_stage').notNull(),
+    changedById: integer('changed_by_id').references(() => users.id, { onDelete: 'set null' }),
+    note: text('note').notNull().default(''),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [index('app_history_app_idx').on(table.applicationId)]
+);
+
+export const interviews = pgTable(
+  'interviews',
+  {
+    id: serial('id').primaryKey(),
+    organizationId: integer('organization_id')
+      .references(() => organizations.id, { onDelete: 'cascade' })
+      .notNull(),
+    applicationId: integer('application_id')
+      .references(() => jobApplications.id, { onDelete: 'cascade' })
+      .notNull(),
+    scheduledById: integer('scheduled_by_id').references(() => users.id, { onDelete: 'set null' }),
+    interviewType: text('interview_type').notNull().default('video'), // 'video' | 'in_person' | 'phone'
+    scheduledAt: timestamp('scheduled_at').notNull(),
+    locationOrLink: text('location_or_link').notNull().default(''),
+    notes: text('notes').notNull().default(''),
+    status: text('status').notNull().default('scheduled'), // 'scheduled' | 'completed' | 'cancelled'
+    feedback: text('feedback').notNull().default(''),
+    outcome: text('outcome').notNull().default('pending'), // 'pending' | 'pass' | 'hold' | 'reject'
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [
+    index('interviews_org_idx').on(table.organizationId),
+    index('interviews_app_idx').on(table.applicationId),
+  ]
+);
+
+export const talentPools = pgTable(
+  'talent_pools',
+  {
+    id: serial('id').primaryKey(),
+    organizationId: integer('organization_id')
+      .references(() => organizations.id, { onDelete: 'cascade' })
+      .notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    createdById: integer('created_by_id').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [index('talent_pools_org_idx').on(table.organizationId)]
+);
+
+export const talentPoolMembers = pgTable(
+  'talent_pool_members',
+  {
+    id: serial('id').primaryKey(),
+    poolId: integer('pool_id')
+      .references(() => talentPools.id, { onDelete: 'cascade' })
+      .notNull(),
+    userId: integer('user_id')
+      .references(() => users.id, { onDelete: 'cascade' })
+      .notNull(),
+    addedById: integer('added_by_id').references(() => users.id, { onDelete: 'set null' }),
+    notes: text('notes').notNull().default(''),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('talent_pool_member_unique_idx').on(table.poolId, table.userId)]
 );
 
 // ============================================================================
@@ -666,6 +759,12 @@ export const postsRelations = relations(posts, ({ one, many }) => ({
   }),
   reactions: many(postReactions),
   comments: many(comments),
+}));
+
+export const commentsRelations = relations(comments, ({ one, many }) => ({
+  post: one(posts, { fields: [comments.postId], references: [posts.id] }),
+  author: one(users, { fields: [comments.authorId], references: [users.id] }),
+  reactions: many(commentReactions),
 }));
 
 export const jobsRelations = relations(jobs, ({ one, many }) => ({

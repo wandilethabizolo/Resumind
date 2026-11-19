@@ -13,7 +13,7 @@ import {
   profiles,
   users,
 } from '../../db/schema.ts';
-import { AuthRequest, optionalAuth, requireAuth } from '../middleware/auth.ts';
+import { AuthRequest, requireAuth } from '../middleware/auth.ts';
 import { getClientIp, recordAuditEvent } from '../services/audit.ts';
 
 const router = Router();
@@ -96,10 +96,11 @@ const updateProfileSchema = z.object({
   languages: z.array(z.string().min(1).max(60)).max(20).optional(),
 });
 
-router.get('/', optionalAuth, async (req: AuthRequest, res) => {
+router.get('/', requireAuth, async (req: AuthRequest, res) => {
   try {
     const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
     const country = typeof req.query.country === 'string' ? req.query.country.trim() : '';
+    const openToWork = req.query.openToWork === 'true';
 
     let blockedIds: number[] = [];
     if (req.dbUser) {
@@ -132,6 +133,7 @@ router.get('/', optionalAuth, async (req: AuthRequest, res) => {
             eq(users.status, 'active'),
             ne(profiles.visibility, 'private'),
             country ? eq(profiles.country, country) : undefined,
+            openToWork ? eq(profiles.openToWork, true) : undefined,
             q
               ? or(
                   ilike(users.fullName, `%${q}%`),
@@ -166,7 +168,7 @@ router.get('/', optionalAuth, async (req: AuthRequest, res) => {
   }
 });
 
-router.get('/trending', optionalAuth, async (_req: AuthRequest, res) => {
+router.get('/trending', requireAuth, async (_req: AuthRequest, res) => {
   try {
     const [searchEvents, recentPosts, activeJobs, activeOrgs, memberSkills] = await Promise.all([
       runQuery('profiles.trending.searches', () =>
@@ -281,7 +283,7 @@ router.post('/trending', requireAuth, async (req: AuthRequest, res) => {
   res.status(201).json({ recorded: true });
 });
 
-router.get('/:id', optionalAuth, async (req: AuthRequest, res) => {
+router.get('/:id', requireAuth, async (req: AuthRequest, res) => {
   const targetUserId = Number(req.params.id);
   if (!Number.isInteger(targetUserId) || targetUserId <= 0) {
     return res.status(400).json({ error: 'Invalid profile user ID' });

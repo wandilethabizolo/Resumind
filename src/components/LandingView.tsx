@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowRight, ExternalLink } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { FeedPost, JobListing } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
 
 export const LandingView: React.FC = () => {
@@ -14,8 +13,6 @@ export const LandingView: React.FC = () => {
     retryAuth,
     logout,
   } = useAuth();
-  const [jobs, setJobs] = useState<JobListing[]>([]);
-  const [posts, setPosts] = useState<FeedPost[]>([]);
   const [signingIn, setSigningIn] = useState(false);
   const [error, setError] = useState('');
   const [isEmbedded, setIsEmbedded] = useState(false);
@@ -26,14 +23,6 @@ export const LandingView: React.FC = () => {
     } catch {
       setIsEmbedded(true);
     }
-    fetch('/api/jobs')
-      .then((r) => (r.ok ? r.json() : { jobs: [] }))
-      .then((d) => setJobs((d.jobs || []).slice(0, 4)))
-      .catch(() => {});
-    fetch('/api/feed')
-      .then((r) => (r.ok ? r.json() : { posts: [] }))
-      .then((d) => setPosts((d.posts || []).slice(0, 3)))
-      .catch(() => {});
   }, []);
 
   const handleSignIn = async () => {
@@ -88,19 +77,19 @@ export const LandingView: React.FC = () => {
         </div>
       </header>
 
-      <main className="flex-1">
-        <section className="mx-auto max-w-6xl px-6 py-12 lg:py-20">
+      <main className="flex flex-1 items-center">
+        <section className="mx-auto w-full max-w-6xl px-6 py-12 lg:py-20">
           <div className="grid grid-cols-1 items-center gap-10 lg:grid-cols-12">
             <div className="flex flex-col justify-center lg:col-span-6">
               <p className="text-xs font-medium text-[#0F5C4D] dark:text-emerald-400">
-                Eswatini & Pan-African Professional Network
+                Eswatini &amp; Pan-African Professional Network
               </p>
               <h1 className="mt-3 font-display text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl lg:text-5xl dark:text-white [text-wrap:balance]">
-                Connect with peers, discover verified roles, and build stronger CVs.
+                Connect with peers, discover verified roles, and grow your career.
               </h1>
               <p className="mt-4 max-w-xl text-base leading-relaxed text-slate-600 dark:text-slate-300">
-                One workspace for your professional profile, network, job applications, direct
-                messaging, employer recruiting, and AI Career Studio.
+                Sign in to access your professional profile, network updates, job vacancies, direct
+                messaging, and employer recruiting workspace.
               </p>
 
               {displayError && (
@@ -193,73 +182,6 @@ export const LandingView: React.FC = () => {
             </div>
           </div>
         </section>
-
-        {(jobs.length > 0 || posts.length > 0) && (
-          <section className="border-t border-slate-200 bg-white py-12 dark:border-slate-800 dark:bg-slate-900">
-            <div className="mx-auto grid max-w-6xl grid-cols-1 gap-10 px-6 lg:grid-cols-12">
-              {jobs.length > 0 && (
-                <div className={posts.length > 0 ? 'lg:col-span-7' : 'lg:col-span-12'}>
-                  <div className="flex items-center justify-between border-b border-slate-200 pb-3 dark:border-slate-800">
-                    <h2 className="text-base font-semibold text-slate-900 dark:text-white">
-                      Open Opportunities
-                    </h2>
-                    <span className="font-mono text-xs text-slate-500 tabular-nums">
-                      {jobs.length} active
-                    </span>
-                  </div>
-                  <div className="divide-y divide-slate-200 dark:divide-slate-800">
-                    {jobs.map((job) => (
-                      <div key={job.id} className="flex items-start justify-between gap-4 py-4">
-                        <div>
-                          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                            {job.title}
-                          </h3>
-                          <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
-                            {job.organization.name} · {job.location}, {job.country} ·{' '}
-                            <span className="capitalize">{job.workArrangement}</span>
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={handleSignIn}
-                          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 whitespace-nowrap shrink-0"
-                        >
-                          Sign in to Apply
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {posts.length > 0 && (
-                <div className={jobs.length > 0 ? 'lg:col-span-5' : 'lg:col-span-12'}>
-                  <div className="border-b border-slate-200 pb-3 dark:border-slate-800">
-                    <h2 className="text-base font-semibold text-slate-900 dark:text-white">
-                      Recent Updates
-                    </h2>
-                  </div>
-                  <div className="divide-y divide-slate-200 dark:divide-slate-800">
-                    {posts.map((post) => (
-                      <article key={post.id} className="py-4">
-                        <div className="text-xs text-slate-500 dark:text-slate-400">
-                          <span className="font-medium text-slate-900 dark:text-slate-200">
-                            {post.authorName}
-                          </span>
-                          <span className="mx-1.5" aria-hidden="true">·</span>
-                          <span>{post.topic}</span>
-                        </div>
-                        <p className="mt-1.5 line-clamp-3 text-sm leading-relaxed text-slate-700 dark:text-slate-300">
-                          {post.content}
-                        </p>
-                      </article>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </section>
-        )}
       </main>
     </div>
   );
